@@ -57,7 +57,7 @@ ARTICLE_SELECTION_TOOL = {
         "properties": {
             "articles": {
                 "type": "array",
-                "maxItems": 10,
+                "description": "選定した記事(最大10件)。多い場合はクライアント側で先頭10件に切り詰める。",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -76,9 +76,7 @@ ARTICLE_SELECTION_TOOL = {
                         "summary": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "minItems": 3,
-                            "maxItems": 3,
-                            "description": "3行の要約",
+                            "description": "ちょうど3要素の要約配列",
                         },
                         "detail": {
                             "type": "string",
