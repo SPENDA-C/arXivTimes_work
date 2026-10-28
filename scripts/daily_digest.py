@@ -15,7 +15,7 @@ import requests
 
 SLACK_CHANNEL_ID = "C0AU65Z4TAL"  # #03y_arxivtimes
 ARTICLES_OUTPUT_PATH = os.environ.get("ARTICLES_OUTPUT_PATH", "/tmp/articles.json")
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5-5")
 REQUEST_TIMEOUT = 120.0
 MAX_RETRIES = 3
 
@@ -45,21 +45,67 @@ Web検索結果から、直近24時間の重要記事を選定し、日本語で
 USER_PROMPT_TEMPLATE = """以下のWeb検索結果から、AI・マーケティング・データ・DX関連の最新ニュース（直近24時間）を最大10件選定してください。
 今日の日付: {today}
 
-検索結果を分析し、以下のJSON形式で出力してください（JSONのみ、説明不要）:
-
-```json
-[
-  {{
-    "source": "メディア・サイト名",
-    "title": "記事タイトル（日本語）",
-    "url": "https://...",
-    "summary": ["要約1行目", "要約2行目", "要約3行目"],
-    "detail": "記事内容を200字以内でまとめた日本語説明",
-    "perspective": "AI・テクノロジー専門家目線の所感を200字程度でまとめた日本語の見解。文の途中で切らず最後まで書き切る"
-  }}
-]
-```
+選定結果は必ず output_selected_articles ツールを呼び出して返してください。
+各記事に source / title / url / summary(3要素配列) / detail / perspective を含めること。
 """
+
+ARTICLE_SELECTION_TOOL = {
+    "name": "output_selected_articles",
+    "description": "選定したニュース記事を構造化データとして返す。スプレッドシート追記用の最終出力。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "articles": {
+                "type": "array",
+                "maxItems": 10,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {
+                            "type": "string",
+                            "description": "記事の発信元メディア・サイト名",
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "記事タイトル(日本語)",
+                        },
+                        "url": {
+                            "type": "string",
+                            "description": "記事URL",
+                        },
+                        "summary": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "description": "3行の要約",
+                        },
+                        "detail": {
+                            "type": "string",
+                            "description": "記事内容を200字以内でまとめた日本語説明",
+                        },
+                        "perspective": {
+                            "type": "string",
+                            "description": "AI・テクノロジー専門家目線の所感を200字程度でまとめた日本語の見解。必ず「。」で終わる完結した文章にする",
+                        },
+                    },
+                    "required": [
+                        "source",
+                        "title",
+                        "url",
+                        "summary",
+                        "detail",
+                        "perspective",
+                    ],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["articles"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
 
 
 def collect_news() -> list[dict]:
@@ -137,11 +183,13 @@ def collect_news() -> list[dict]:
         print("Error: No search results collected", file=sys.stderr)
         sys.exit(1)
 
-    # 検索結果をClaude APIで構造化
+    # 検索結果をClaude APIで構造化 (tool use + strict schema で JSON 構文エラーを根絶)
     response = client.messages.create(
         model=MODEL,
-        max_tokens=4096,
-        system=SYSTEM_PROMPT,
+        max_tokens=8192,
+        system=SYSTEM_PROMPT
+        + "\n\n必ず output_selected_articles ツールを呼び出して結果を返してください。",
+        tools=[ARTICLE_SELECTION_TOOL],
         messages=[
             {
                 "role": "user",
@@ -152,19 +200,49 @@ def collect_news() -> list[dict]:
         ],
     )
 
-    result_text = ""
+    articles: list[dict] | None = None
     for block in response.content:
-        if block.type == "text":
-            result_text += block.text
+        if block.type == "tool_use" and block.name == "output_selected_articles":
+            articles = list(block.input.get("articles", []))
+            break
 
-    # JSONを抽出
-    json_start = result_text.find("[")
-    json_end = result_text.rfind("]") + 1
-    if json_start == -1 or json_end == 0:
-        print(f"Error: Could not parse JSON from response:\n{result_text}", file=sys.stderr)
-        sys.exit(1)
+    if articles is None:
+        # フォールバック: ツール呼び出しがなかった場合は従来のテキスト抽出
+        result_text = ""
+        for block in response.content:
+            if block.type == "text":
+                result_text += block.text
+        print(
+            "Warning: output_selected_articles tool was not called. "
+            "Falling back to text JSON extraction.",
+            file=sys.stderr,
+        )
+        cleaned = result_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```", 2)[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+        json_start = cleaned.find("[")
+        json_end = cleaned.rfind("]") + 1
+        if json_start == -1 or json_end == 0:
+            print(
+                f"Error: Could not parse JSON from response:\n{result_text}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            articles = json.loads(cleaned[json_start:json_end])
+        except json.JSONDecodeError as e:
+            text = cleaned[json_start:json_end]
+            ctx_start = max(0, e.pos - 120)
+            ctx_end = min(len(text), e.pos + 120)
+            print(
+                f"Error: JSONDecodeError at pos {e.pos}: {e.msg}\n"
+                f"Context around error:\n...{text[ctx_start:ctx_end]}...",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
-    articles = json.loads(result_text[json_start:json_end])
     return articles[:10]
 
 
