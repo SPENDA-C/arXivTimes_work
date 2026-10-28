@@ -5,7 +5,7 @@ arXivTimes Sheets Append
 daily_digest.py が出力した articles.json を読み、
 指定されたGoogleスプレッドシート（gid指定タブ）に行を追記する。
 
-列構成: ソース / タイトル / URL / 詳細(200字以内) / 収集日時
+列構成: ソース / タイトル / URL / 詳細(200字以内) / 見解(200字以内) / 収集日時
 
 認証はサービスアカウントJSON（環境変数 GOOGLE_SERVICE_ACCOUNT_JSON）を使用する。
 """
@@ -54,6 +54,13 @@ def derive_source(article: dict) -> str:
         return ""
 
 
+def truncate(text: str) -> str:
+    """200字を超える場合は末尾を … で切り詰める。"""
+    if len(text) > DETAIL_MAX_CHARS:
+        return text[: DETAIL_MAX_CHARS - 1] + "…"
+    return text
+
+
 def derive_detail(article: dict) -> str:
     """detail が無い場合は summary を結合してフォールバック。200字に切り詰め。"""
     detail = (article.get("detail") or "").strip()
@@ -63,9 +70,12 @@ def derive_detail(article: dict) -> str:
             detail = " ".join(str(s).strip() for s in summary if s)
         else:
             detail = str(summary)
-    if len(detail) > DETAIL_MAX_CHARS:
-        detail = detail[: DETAIL_MAX_CHARS - 1] + "…"
-    return detail
+    return truncate(detail)
+
+
+def derive_perspective(article: dict) -> str:
+    """perspective（見解）を200字に切り詰める。未取得時は空欄のまま。"""
+    return truncate((article.get("perspective") or "").strip())
 
 
 def build_rows(articles: list[dict]) -> list[list[str]]:
@@ -77,6 +87,7 @@ def build_rows(articles: list[dict]) -> list[list[str]]:
                 (a.get("title") or "").strip(),
                 (a.get("url") or "").strip(),
                 derive_detail(a),
+                derive_perspective(a),
                 (a.get("collected_at") or "").strip(),
             ]
         )
@@ -108,7 +119,7 @@ def resolve_sheet_name(service, spreadsheet_id: str, gid: int) -> str:
 
 def append_rows(service, spreadsheet_id: str, sheet_name: str, rows: list[list[str]]) -> int:
     body = {"values": rows}
-    range_name = f"'{sheet_name}'!A:E"
+    range_name = f"'{sheet_name}'!A:F"
     result = (
         service.spreadsheets()
         .values()
