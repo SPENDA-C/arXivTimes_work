@@ -5,7 +5,7 @@ arXivTimes Sheets Append
 daily_digest.py が出力した articles.json を読み、
 指定されたGoogleスプレッドシート（gid指定タブ）に行を追記する。
 
-列構成: ソース / タイトル / URL / 詳細(200字以内) / 見解(200字以内) / 収集日時
+列構成: ソース / タイトル / URL / 詳細(200字以内) / 見解(200字程度) / 収集日時
 
 認証はサービスアカウントJSON（環境変数 GOOGLE_SERVICE_ACCOUNT_JSON）を使用する。
 """
@@ -27,6 +27,11 @@ TARGET_SHEET_GID = int(os.environ.get("TARGET_SHEET_GID", "1803997752"))
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 DETAIL_MAX_CHARS = 200
+# 見解は200字を目安としつつ、文の途中で切らずに文末まで残す
+PERSPECTIVE_SOFT_MAX_CHARS = 200
+SENTENCE_END_CHARS = "。．.！？!?"
+# 文末記号の直後に続く閉じ括弧・引用符はひとまとまりとして残す
+CLOSING_CHARS = "」』）)】〉》〕］]”’\"'"
 
 
 def load_articles(path: str) -> list[dict]:
@@ -73,9 +78,27 @@ def derive_detail(article: dict) -> str:
     return truncate(detail)
 
 
+def truncate_at_sentence(text: str, soft_limit: int = PERSPECTIVE_SOFT_MAX_CHARS) -> str:
+    """soft_limit を目安に、文の途中では切らず文末まで残す。
+
+    soft_limit 以内に収まる場合はそのまま返す。超える場合は soft_limit 以降で
+    最初に現れる文末（。！？等）までを残すため、結果は soft_limit を超えうる。
+    文末が見つからない場合は切り詰めずに全文を返す。
+    """
+    if len(text) <= soft_limit:
+        return text
+    for i in range(soft_limit - 1, len(text)):
+        if text[i] in SENTENCE_END_CHARS:
+            end = i + 1
+            while end < len(text) and text[end] in CLOSING_CHARS:
+                end += 1
+            return text[:end]
+    return text
+
+
 def derive_perspective(article: dict) -> str:
-    """perspective（見解）を200字に切り詰める。未取得時は空欄のまま。"""
-    return truncate((article.get("perspective") or "").strip())
+    """perspective（見解）を文末単位で切り詰める。未取得時は空欄のまま。"""
+    return truncate_at_sentence((article.get("perspective") or "").strip())
 
 
 def build_rows(articles: list[dict]) -> list[list[str]]:
