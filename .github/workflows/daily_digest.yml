@@ -1,9 +1,7 @@
 name: Daily AI/DX News Digest
 
 on:
-  schedule:
-    # JST 04:00 = UTC 19:00 (前日)
-    - cron: '0 19 * * *'
+  # 毎朝の自動実行は停止中。再開するときは schedule (cron: '0 19 * * *' = JST 04:00) を戻す
   workflow_dispatch: # 手動実行用
 
 jobs:
